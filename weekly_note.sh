@@ -14,9 +14,11 @@ DAYS="${WEEKLY_DAYS:-7}"
 NOTES_DIR="$(cd "$(dirname "$0")" && pwd)/notes"   # launchd 로그 전용 (plist가 여기에 기록)
 NOTES_FOLDER="주간업무"                # Apple 메모 폴더명
 
-START=$(date -v-"$DAYS"d +%Y-%m-%d)
-END=$(date +%Y-%m-%d)
-WEEK=$(date +%G-W%V)
+# 기준일 — 보통 오늘. 놓친 주를 백필하려면 WEEKLY_REF=2026-09-04 처럼 그 주의 금요일을 준다.
+REF="${WEEKLY_REF:-$(date +%Y-%m-%d)}"
+START=$(date -j -v-"$DAYS"d -f %Y-%m-%d "$REF" +%Y-%m-%d)
+END="$REF"
+WEEK=$(date -j -f %Y-%m-%d "$REF" +%G-W%V)
 TITLE="주간업무 $WEEK ($START ~ $END)"
 mkdir -p "$NOTES_DIR"
 OUT=$(mktemp -t weekly-note)           # 메모 변환용 임시 md — 종료 시 삭제
@@ -46,7 +48,7 @@ summarize_repo() { # $1=repo dir
               --pretty='===== 커밋 [%ad] %s%n%b' --stat --patch --unified=1 \
               -- . ':(exclude)*.lock' ':(exclude)*lock.json' 2>/dev/null | head -c "$PATCH_LIMIT")
     dump+=$'\n\n'
-  done < <(git -C "$1" log --all --no-merges --since="$DAYS days ago" \
+  done < <(git -C "$1" log --all --no-merges --since="$START 00:00" --until="$END 23:59" \
              --author="$AUTHOR" --pretty=%H 2>/dev/null)
   [ -n "$dump" ] || return 1
   printf '%s' "$dump" | "$CLAUDE_BIN" -p "$SUMMARY_PROMPT" 2>/dev/null
@@ -57,7 +59,7 @@ total=0
 for root in "${REPO_ROOTS[@]}"; do
   for d in "$root"/*/; do
     [ -d "$d/.git" ] || continue
-    log=$(git -C "$d" log --all --no-merges --since="$DAYS days ago" \
+    log=$(git -C "$d" log --all --no-merges --since="$START 00:00" --until="$END 23:59" \
           --author="$AUTHOR" --date=format:%m/%d --pretty='- [%ad] %s' 2>/dev/null)
     [ -n "$log" ] || continue
     n=$(printf '%s\n' "$log" | wc -l | tr -d ' ')
@@ -99,7 +101,8 @@ html=$(sed -E \
 # 빈 본문으로 기존 메모를 덮어쓰는 사고 방지
 [ -n "$html" ] || { echo "본문 생성 실패 — 메모를 건드리지 않고 종료" >&2; exit 1; }
 
-osascript - "$NOTES_FOLDER" "$TITLE" "$html" <<'AS'
+# osascript 실패(-1743 자동화 권한 거부 등)를 그대로 성공처럼 넘기지 않는다
+osascript - "$NOTES_FOLDER" "$TITLE" "$html" <<'AS' || { echo "Apple 메모 기록 실패 — 시스템 설정 > 개인정보 보호 및 보안 > 자동화에서 Notes 권한 확인 필요" >&2; exit 1; }
 on run {folderName, noteTitle, noteBody}
   tell application "Notes"
     tell account 1
